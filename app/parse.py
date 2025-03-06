@@ -1,87 +1,84 @@
-import csv
-import logging
-from dataclasses import dataclass, field, fields, astuple
-
 import requests
-from bs4 import Tag, BeautifulSoup
+from bs4 import BeautifulSoup
+import csv
 
 BASE_URL = "https://quotes.toscrape.com/"
-
-@dataclass
-class Quote:
-    text: str
-    author: str
-    tags: list[str]
-
-QUOTE_FIELDS = [field.name for field in fields(Quote)]
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(levelname)8s]: %(message)s",
-    handlers=[
-        logging.FileHandler("parse.log"),
-        logging.StreamHandler()
-    ]
-)
-
-def parse_single_quote(quote: Tag) -> Quote:
-    return Quote(
-    text=quote.select_one(".text").text,
-    author=quote.select_one(".author").text,
-    tags=[tag.text for tag in quote.select(".tag")]
-    )
-
-def get_home_quotes() -> [Quote]:
-    text = requests.get(BASE_URL).content
-    soup = BeautifulSoup(text, "html.parser")
-    quotes = soup.select(".quote")
-    return [parse_single_quote(quote) for quote in quotes]
-
-def get_num_pages(page_soup: Tag) -> int:
-    pagination = page_soup.select_one(".pager")
-    if not pagination:
-        # If no pagination is found, assume there's only one page
-        return 1
-    # Find the last page number from the pager links
-    page_links = pagination.select("a[href]")
-    if not page_links:
-        return 1
-    # Extract numbers from hrefs and find the maximum
-    try:
-        page_numbers = [int(a["href"].split("/")[-2]) for a in page_links if a["href"].split("/")[-2].isdigit()]
-        return max(page_numbers) if page_numbers else 1
-    except (KeyError, ValueError):
-        # Return 1 if there's any unexpected issue parsing numbers
-        return 1
+AUTHOR_CACHE = {}  # Кэш для сохранения биографий авторов
 
 
-def single_page_quotes(soup: Tag) -> [Quote]:
-    quotes = soup.select(".quote")
-    return [parse_single_quote(quote) for quote in quotes]
+def get_quotes_from_page(url):
+    """Парсит страницу с цитатами."""
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    quotes_data = []
+    for quote in soup.select(".quote"):
+        text = quote.select_one(".text").get_text(strip=True)
+        author = quote.select_one(".author").get_text(strip=True)
+        author_url = BASE_URL + quote.select_one("a")["href"]  # Ссылка на страницу автора
+        tags = [tag.get_text(strip=True) for tag in quote.select(".tag")]
+        quotes_data.append({
+            "text": text,
+            "author": author,
+            "author_url": author_url,
+            "tags": tags,
+        })
+    next_btn = soup.select_one(".pager .next a")
+    next_page = BASE_URL + next_btn["href"] if next_btn else None
+    return quotes_data, next_page
 
-def get_all_quotes() -> [Quote]:
-    logging.info("Getting all quotes")
-    text = requests.get(BASE_URL).content
-    first_page_soup = BeautifulSoup(text, "html.parser")
-    all_quotes = single_page_quotes(first_page_soup)
-    num_pages = get_num_pages(first_page_soup)
-    for page_num in range(1, num_pages + 1):
-        logging.info(f"Getting quotes from page {page_num}")
-        text = requests.get(BASE_URL, {"page": page_num}).content
-        next_page_soup = BeautifulSoup(text, "html.parser")
-        all_quotes.extend(single_page_quotes(next_page_soup))
-    return all_quotes
 
-def output_csv_path(quotes: [Quote]) -> None:
-    with open("results.csv", "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(QUOTE_FIELDS)
-        writer.writerows([astuple(quotes) for quotes in quotes])
+def get_author_bio(url):
+    """Возвращает биографию автора (при необходимости кеширует)."""
+    if url in AUTHOR_CACHE:
+        return AUTHOR_CACHE[url]
 
-def main() -> None:
-    output_csv_path(get_all_quotes())
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    bio = soup.select_one(".author-description").get_text(strip=True)  # Биография
+    AUTHOR_CACHE[url] = bio
+    return bio
+
+
+def save_to_csv(file_path, fieldnames, data):
+    """Сохраняет данные в CSV-файл."""
+    with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+
+
+def main(output_quotes_csv, output_authors_csv=None):
+    """Основная функция, объединяющая сбор данных."""
+    all_quotes = []
+    all_authors = []
+
+    next_page_url = BASE_URL
+    while next_page_url:
+        quotes, next_page_url = get_quotes_from_page(next_page_url)
+        for quote in quotes:
+            # Сохраняем цитаты
+            all_quotes.append({
+                "text": quote['text'],
+                "author": quote['author'],
+                "tags": ", ".join(quote['tags'])
+            })
+            # Сохраняем биографии авторов, если нужно
+            if output_authors_csv:
+                bio = get_author_bio(quote['author_url'])
+                all_authors.append({
+                    "author": quote['author'],
+                    "bio": bio
+                })
+
+    # Сохраняем цитаты в CSV
+    save_to_csv(output_quotes_csv, ["text", "author", "tags"], all_quotes)
+
+    # Сохраняем авторов в отдельный CSV, если указано
+    if output_authors_csv:
+        save_to_csv(output_authors_csv, ["author", "bio"], all_authors)
+
 
 
 
 if __name__ == "__main__":
-    main()
+    main("output_quotes_csv")
