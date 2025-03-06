@@ -13,7 +13,6 @@ AUTHOR_CACHE: Dict[str, str] = {}
 class Quote:
     text: str
     author: str
-    author_url: str
     tags: List[str]
 
 
