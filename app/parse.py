@@ -1,10 +1,20 @@
+import csv
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+
 import requests
 from bs4 import BeautifulSoup
-import csv
-from typing import List, Dict, Optional, Tuple
 
 BASE_URL = "https://quotes.toscrape.com/"
 AUTHOR_CACHE: Dict[str, str] = {}
+
+
+@dataclass
+class Quote:
+    text: str
+    author: str
+    author_url: str
+    tags: List[str]
 
 
 def get_quotes_from_page(url: str) -> (
